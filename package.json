@@ -1,0 +1,16 @@
+{
+  "name": "poc-playwright-cli",
+  "private": true,
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w web",
+    "build": "npm run build -w web",
+    "app:up": "bash scripts/app-up.sh",
+    "app:down": "bash scripts/app-down.sh"
+  },
+  "devDependencies": {
+    "@playwright/cli": "0.1.23"
+  }
+}
