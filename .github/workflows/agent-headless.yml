@@ -1,0 +1,84 @@
+# Run Claude Code headless (`claude -p`) on a task, then open a PR with the browser evidence.
+# Deliberately uses only plain shell steps around the agent, so it ports to Azure DevOps 1:1
+# (see AZURE_DEVOPS.md in F8). Trigger: Actions tab -> "Agent (headless)" -> Run workflow.
+name: Agent (headless)
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Frontend task for the agent
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: agent-headless-${{ github.ref }}
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TASK: ${{ inputs.task }}
+      BRANCH: agent/run-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Uses the runner's preinstalled Chrome; downloads Chromium if there is none.
+      - name: Set up browser for playwright-cli
+        run: npx playwright-cli install
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.319
+
+      - name: Run agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          mkdir -p artifacts
+          claude -p "$TASK" \
+            --max-turns 40 \
+            --allowedTools "Read,Edit,Write,Glob,Grep,Skill,Bash(npm run *),Bash(npx playwright-cli *),Bash(mkdir -p artifacts)" \
+            | tee artifacts/agent.log
+
+      - name: Stop app
+        if: always()
+        run: npm run app:down
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-evidence
+          path: |
+            artifacts/
+            .app-up.log
+          if-no-files-found: warn
+
+      - name: Open PR with evidence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+            echo "Agent made no changes; nothing to open a PR for."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add -A
+          git commit -m "agent: $TASK"
+          git push origin "$BRANCH"
+          bash scripts/ci-post-evidence.sh pr-create "$BRANCH" "agent: $TASK"
